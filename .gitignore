@@ -1,0 +1,4 @@
+notify.log
+helper/AllowShowNotifier.app/Contents/MacOS/AllowShowNotifier
+helper/AllowShowNotifier.app/Contents/_CodeSignature/
+helper/AllowShowNotifier.app/Contents/MacOS/.AllowShowNotifier.new
