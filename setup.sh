@@ -35,39 +35,55 @@ clear_problem() { rm -f "$PROBLEM_DIR/$1" "$PROBLEM_DIR/$1.shown"; }
 
 # ------------------------------------------------------------------------- 1
 CURRENT="1 (signing identity)"
-step "1. Code-signing identity"
+step "1. Code-signing identity (only needed to rebuild the helper)"
 ID_LINE=$(security find-identity -v -p codesigning 2>/dev/null | grep -E '"Apple Development: ' | head -n 1)
 if [ -n "$ID_LINE" ]; then
   ok "$(printf '%s' "$ID_LINE" | sed -E 's/^[^"]*"(.*)".*$/\1/')"
 else
-  bad "no \"Apple Development\" signing identity in your keychain"
-  fix "Xcode → Settings → Accounts → + (any Apple ID) → select the Personal Team → Manage Certificates… → + → Apple Development"
-  fix "then re-run ./setup.sh"
+  ok "none, which is fine: this checkout ships a signed helper (step 2)"
+  info "to rebuild it yourself you'd need one: Xcode → Settings → Accounts → + (any Apple ID) → Personal Team → Manage Certificates… → + → Apple Development"
 fi
 
 # ------------------------------------------------------------------------- 2
-CURRENT="2 (helper build)"
-step "2. Helper built and signed"
-WHY=""
-if [ ! -x "$BIN" ]; then WHY="not built yet"
-elif ! grep -q '^Authority=' <<<"$(codesign -dvv "$APP" 2>&1)"; then WHY="ad-hoc signed or unsigned"
-elif ! codesign --verify --strict "$APP" >/dev/null 2>&1; then WHY="signature doesn't verify"
-elif [ helper/src/main.swift -nt "$BIN" ]; then WHY="helper/src/main.swift is newer than the build"
+CURRENT="2 (helper)"
+step "2. Helper signed and matching the source"
+# helper_problem: why the bundle can't be used as-is ("" when it can).
+helper_problem() {
+  local sig
+  [ -x "$BIN" ] || { echo "missing"; return; }
+  sig=$(codesign -dvv "$APP" 2>&1)
+  grep -q '^Authority=' <<<"$sig" || { echo "ad-hoc signed or unsigned"; return; }
+  codesign --verify --strict "$APP" >/dev/null 2>&1 || { echo "its signature doesn't verify (a file in it was changed)"; return; }
+  [ "$(cat "$APP/Contents/Resources/source.sha256" 2>/dev/null)" = "$(helper/source-hash.sh)" ] \
+    || { echo "built from a different helper/src/main.swift or Info.plist than this checkout"; return; }
+}
+# A downloaded (not cloned) copy carries quarantine, and Gatekeeper refuses to
+# run an un-notarized app ("could not be opened") -- so clear it before the
+# helper runs at all. git clone/pull never sets it.
+if [ -d "$APP" ] && grep -q com.apple.quarantine <<<"$(/usr/bin/xattr -r "$APP" 2>/dev/null)"; then
+  /usr/bin/xattr -dr com.apple.quarantine "$APP" && info "removed the download quarantine flag (Gatekeeper would block it)"
 fi
+WHY=$(helper_problem)
 if [ -n "$WHY" ] && [ -n "$ID_LINE" ]; then
-  info "$WHY -- running helper/build.sh"
+  info "$WHY -- rebuilding with helper/build.sh"
   if OUT=$(helper/build.sh 2>&1); then
-    WHY=""
+    WHY=$(helper_problem)
+    [ -z "$WHY" ] && info "rebuilt; commit it so Macs without an identity get it: git add helper/AllowShowNotifier.app && git commit"
   else
     bad "helper/build.sh failed:"
     printf '%s\n' "$OUT" | tail -n 15 | sed 's/^/      /'
+    WHY="build failed"
   fi
-elif [ -n "$WHY" ]; then
-  bad "$WHY, and it can't be built without step 1"
 fi
 if [ -z "$WHY" ]; then
-  ok "signed by $(codesign -dvv "$APP" 2>&1 | sed -n 's/^Authority=//p' | head -n 1)"
+  SIG=$(codesign -dvv "$APP" 2>&1)
+  ok "signed by $(sed -n 's/^Authority=//p' <<<"$SIG" | head -n 1), team $(sed -n 's/^TeamIdentifier=//p' <<<"$SIG"), $(lipo -archs "$BIN" 2>/dev/null), matches the source"
+  # So System Settings shows it as "Claude Code" with its icon.
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" >/dev/null 2>&1
   clear_problem unusable
+elif [ "$WHY" != "build failed" ]; then
+  bad "the committed helper is $WHY, and this Mac has no signing identity to rebuild it"
+  fix "git pull (the committed build should match the source), or rebuild on a Mac with the identity and commit helper/AllowShowNotifier.app"
 fi
 
 # ------------------------------------------------------------------------- 3
@@ -77,6 +93,9 @@ STATUS=""
 if [ -x "$BIN" ]; then
   STATUS=$("$BIN" status 2>/dev/null)
   case "${STATUS%% *}" in
+    "")
+      bad "the helper didn't run (blocked by Gatekeeper? see step 2)"
+      fix "run it once by hand to see why: $BIN status" ;;
     authorized)
       ok "authorized" ;;
     notDetermined)
@@ -132,7 +151,7 @@ if [ "${STATUS%% *}" = "authorized" ]; then
   elif [ -z "$VERDICTS" ]; then
     ok "a test card was shown, and no Focus is filtering right now"
     fix "if you use Focus modes (e.g. Work), add Claude Code to each: System Settings → Focus → (Focus) → Allowed Notifications → Apps → Add"
-  elif printf '%s\n' "$VERDICTS" | grep -qv '^suppression=0$'; then
+  elif grep -qv '^suppression=0$' <<<"$VERDICTS"; then
     bad "your current Focus hid a test card (no banner; Notification Center only)"
     fix "System Settings → Focus → (the Focus that's on) → Allowed Notifications → Apps → Add → Claude Code. Opening Focus settings…"
     open "x-apple.systempreferences:com.apple.Focus-Settings.extension" 2>/dev/null

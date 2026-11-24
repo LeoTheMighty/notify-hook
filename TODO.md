@@ -40,6 +40,11 @@ On the personal Mac (macOS 26.2 25C56, Xcode 26.3, Personal Team identity
 - **The Show action had `.foreground`**, so macOS launched an extra,
   argument-less copy of the app on every click. Removed.
 
+## Since then
+
+- The signed helper is committed (universal, macOS 11+, Apple-timestamped), so
+  the work Mac needs no Xcode: clone and run `./setup.sh`. Not yet run there.
+
 ## Still open
 
 - **Does a free Personal Team certificate keep working for a locally-signed,

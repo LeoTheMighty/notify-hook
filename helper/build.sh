@@ -1,8 +1,13 @@
 #!/bin/bash
 # Rebuilds AllowShowNotifier.app's executable from src/main.swift and signs the
-# bundle with a real "Apple Development" identity from the login keychain. The
-# compiled binary isn't committed (it's machine/arch specific); run this after
-# cloning or after editing src/main.swift.
+# bundle with a real "Apple Development" identity from the login keychain.
+#
+# The signed bundle IS committed, so a Mac without Xcode or a signing identity
+# (e.g. a managed work Mac) can just clone and run ./setup.sh. Run this only on
+# a Mac that has the identity, after editing src/main.swift or Info.plist, then
+# commit helper/AllowShowNotifier.app. The binary is universal (arm64 + x86_64,
+# macOS 11+), timestamped by Apple, and carries Contents/Resources/source.sha256
+# so setup.sh can tell whether the committed build matches the source.
 #
 # Why a real identity and not ad-hoc (`codesign -s -`): amfid rejects an ad-hoc
 # signature for this bundle with
@@ -61,22 +66,42 @@ if [ "$SIGN_ID" = "-" ]; then
   printf 'build.sh: WARNING: amfid will reject this build (-423) and notify.sh will not use it.\n' >&2
 fi
 
-mkdir -p "$APP/Contents/MacOS"
-# Compile beside the live binary and rename over it: helpers waiting on open
-# cards are running the old file, and rewriting it in place would kill them.
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+# Universal, macOS 11+ (the first arm64 release; UserNotifications needs 10.14),
+# so the committed build runs on any Mac -- swiftc's default target is this
+# machine's arch and OS. Compiled beside the live binary and renamed over it:
+# helpers waiting on open cards are running the old file, and rewriting it in
+# place would kill them.
+TMPD=$(mktemp -d)
+trap 'rm -rf "$TMPD"' EXIT
+for arch in arm64 x86_64; do
+  swiftc -O -target "$arch-apple-macos11.0" src/main.swift -o "$TMPD/$arch"
+done
 NEW="$APP/Contents/MacOS/.AllowShowNotifier.new"
-swiftc -O src/main.swift -o "$NEW"
+lipo -create "$TMPD/arm64" "$TMPD/x86_64" -output "$NEW"
 mv -f "$NEW" "$APP/Contents/MacOS/AllowShowNotifier"
+# What this build was made from (sealed by the signature below).
+./source-hash.sh > "$APP/Contents/Resources/source.sha256"
 
 echo "Signing with: $SIGN_NAME${SIGN_ID:+ [$SIGN_ID]}"
-codesign --force --deep --sign "$SIGN_ID" "$APP"
+if [ "$SIGN_ID" = "-" ]; then
+  codesign --force --deep --sign - "$APP"
+elif ! codesign --force --deep --timestamp --sign "$SIGN_ID" "$APP"; then
+  # Apple's timestamp server needs the network; the signature is valid without
+  # one, it just can't prove when it was made once the certificate expires.
+  printf 'build.sh: WARNING: timestamping failed (offline?); signing without a secure timestamp.\n' >&2
+  codesign --force --deep --sign "$SIGN_ID" "$APP"
+fi
 codesign --verify --strict --verbose=1 "$APP"
 
-if [ "$SIGN_ID" != "-" ] && codesign -dv "$APP" 2>&1 | grep -q '^Signature=adhoc'; then
+# (Captured first: `codesign | grep -q` under pipefail misreports a match.)
+SIG_INFO=$(codesign -dvv "$APP" 2>&1)
+if [ "$SIGN_ID" != "-" ] && ! grep -q '^Authority=' <<<"$SIG_INFO"; then
   die "codesign produced an ad-hoc signature even though identity '$SIGN_NAME' was requested"
 fi
 
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" >/dev/null 2>&1 || true
 
-echo "Built $APP/Contents/MacOS/AllowShowNotifier"
-codesign -dv "$APP" 2>&1
+echo "Built $APP/Contents/MacOS/AllowShowNotifier ($(lipo -archs "$APP/Contents/MacOS/AllowShowNotifier"))"
+grep -E '^(Authority=Apple|TeamIdentifier|Timestamp)' <<<"$SIG_INFO"
+echo "Commit it: git add helper/AllowShowNotifier.app && git commit"

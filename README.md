@@ -15,25 +15,46 @@ did.
 
 ## Setup steps
 
-**Run `./setup.sh`.** It checks the six steps below in order. It does what it
+**On any Mac, Xcode or not:** `git clone` this repo, then run `./setup.sh`.
+The helper app is **committed already signed**, so a Mac with no Xcode and no
+signing identity (e.g. a managed work Mac) needs nothing else. Clone it rather
+than downloading a zip: a browser download is quarantined, and Gatekeeper
+refuses to run an un-notarized app ("could not be opened"). `setup.sh` clears
+that flag if it finds one.
+
+**`./setup.sh`** checks the six steps below in order. It does what it
 can itself: builds and signs the helper, asks macOS for permission, opens the
 right System Settings page, and tests a card against your current Focus. For
 everything else it prints the exact click, as a ✗ with a → fix. Re-run it any
 time something seems off. `./setup.sh --install-hook` also does step 6.
 
-1. **Code-signing identity.** You need a free Personal Team "Apple Development"
-   certificate: Xcode → Settings → Accounts → `+` (any Apple ID) → select the
-   Personal Team → Manage Certificates… → `+` → Apple Development.
-   `security find-identity -v -p codesigning` should list
-   `"Apple Development: <name> (<id>)"`.
+1. **Code-signing identity: only needed to rebuild the helper.** That's a free
+   Personal Team "Apple Development" certificate: Xcode → Settings → Accounts →
+   `+` (any Apple ID) → select the Personal Team → Manage Certificates… → `+` →
+   Apple Development. `security find-identity -v -p codesigning` should then
+   list `"Apple Development: <name> (<id>)"`. A Mac without one uses the
+   committed build.
 
-2. **Helper built and signed.** `helper/build.sh` signs with the first
-   `Apple Development:` identity it finds; set `CODESIGN_IDENTITY=<name or
-   SHA-1>` to pick a different one. With no identity it **fails** rather than
-   ad-hoc signing (see "Signing" below). `setup.sh` rebuilds when the helper is
-   missing, ad-hoc signed, fails to verify, or is older than
-   `helper/src/main.swift`. Rebuilding is safe while cards are up: the new
-   binary is renamed over the old one, never rewritten in place.
+2. **Helper signed and matching the source.** The committed
+   `helper/AllowShowNotifier.app` is:
+   - universal (Apple Silicon + Intel), for macOS 11+;
+   - signed with an Apple Development identity and Apple's secure timestamp;
+   - stamped with the hash of the source it was built from
+     (`Contents/Resources/source.sha256`, sealed by the signature, compared
+     with `helper/source-hash.sh`).
+
+   `setup.sh` accepts it when the signature verifies and the stamp matches
+   this checkout, and shows who signed it. Otherwise it rebuilds with
+   `helper/build.sh` if this Mac has an identity, or tells you to pull a
+   current build. `build.sh` never falls back to ad-hoc signing (see
+   "Signing" below). Rebuilding is safe while cards are up: the new binary is
+   renamed over the old one, never rewritten in place.
+
+   **Shipping a new helper build** (after editing `helper/src/main.swift` or
+   `Info.plist`): on the Mac with the identity, run `helper/build.sh` (or
+   `./setup.sh`), then `git add helper/AllowShowNotifier.app && git commit`.
+   `.gitattributes` keeps the bundle byte-exact, because any change inside it
+   breaks the signature.
 
 3. **Notifications allowed for "Claude Code".** That's the helper's name in
    System Settings, with the Claude icon. On first run, macOS shows "Claude
@@ -221,7 +242,23 @@ session name before sending.
 - **`setup.sh`** passes all six steps on this Mac. The probe card was presented
   and removed itself after 3s.
 
+- **A Mac without Xcode, simulated:** a fresh `git clone`, a stub `security`
+  reporting 0 identities, and a browser-style `com.apple.quarantine` flag on
+  the bundle. Before the fix, Gatekeeper blocked the quarantined copy ("could
+  not be opened"). After it, `setup.sh` cleared the flag before running
+  anything (0 Gatekeeper denials). It accepted the committed build as signed
+  and matching the source, then passed authorization and the Focus probe.
+  Editing `main.swift` in the clone made step 2 fail with "pull or rebuild on
+  a Mac with the identity". After `git clone` the signature verifies and the
+  binary is byte-identical to the build. The Intel slice runs under Rosetta.
+
 **Reasoned about, not fired:**
+
+- **A real second Mac.** The signature carries no provisioning profile and no
+  entitlements, so nothing ties it to this machine, and a cloned
+  (unquarantined) Apple Development-signed app should run anywhere. That
+  hasn't been tried on the work Mac yet. Its MDM may also restrict
+  notifications, which only running `setup.sh` there will show.
 
 - A waiter dies (logout or reboot) while its card is up. A later click then
   either launches an argument-less copy of the app, which prints usage and
