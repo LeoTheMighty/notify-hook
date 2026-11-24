@@ -1,0 +1,2 @@
+# The signed helper bundle must stay byte-exact or its signature breaks.
+helper/AllowShowNotifier.app/** -text -diff

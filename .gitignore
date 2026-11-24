@@ -1,4 +1,3 @@
 notify.log
-helper/AllowShowNotifier.app/Contents/MacOS/AllowShowNotifier
-helper/AllowShowNotifier.app/Contents/_CodeSignature/
+# build.sh's temp output; the signed bundle itself IS committed
 helper/AllowShowNotifier.app/Contents/MacOS/.AllowShowNotifier.new
