@@ -57,6 +57,12 @@ helper_problem() {
   [ "$(cat "$APP/Contents/Resources/source.sha256" 2>/dev/null)" = "$(helper/source-hash.sh)" ] \
     || { echo "built from a different helper/src/main.swift or Info.plist than this checkout"; return; }
 }
+# A downloaded (not cloned) copy carries quarantine, and Gatekeeper refuses to
+# run an un-notarized app ("could not be opened") -- so clear it before the
+# helper runs at all. git clone/pull never sets it.
+if [ -d "$APP" ] && grep -q com.apple.quarantine <<<"$(/usr/bin/xattr -r "$APP" 2>/dev/null)"; then
+  /usr/bin/xattr -dr com.apple.quarantine "$APP" && info "removed the download quarantine flag (Gatekeeper would block it)"
+fi
 WHY=$(helper_problem)
 if [ -n "$WHY" ] && [ -n "$ID_LINE" ]; then
   info "$WHY -- rebuilding with helper/build.sh"
@@ -72,11 +78,6 @@ fi
 if [ -z "$WHY" ]; then
   SIG=$(codesign -dvv "$APP" 2>&1)
   ok "signed by $(sed -n 's/^Authority=//p' <<<"$SIG" | head -n 1), team $(sed -n 's/^TeamIdentifier=//p' <<<"$SIG"), $(lipo -archs "$BIN" 2>/dev/null), matches the source"
-  # Downloaded (not cloned) copies carry quarantine, and Gatekeeper refuses an
-  # un-notarized app; git clone/pull never sets it.
-  if xattr -r "$APP" 2>/dev/null | grep -q com.apple.quarantine; then
-    xattr -dr com.apple.quarantine "$APP" && info "removed the download quarantine flag"
-  fi
   # So System Settings shows it as "Claude Code" with its icon.
   /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" >/dev/null 2>&1
   clear_problem unusable
@@ -92,6 +93,9 @@ STATUS=""
 if [ -x "$BIN" ]; then
   STATUS=$("$BIN" status 2>/dev/null)
   case "${STATUS%% *}" in
+    "")
+      bad "the helper didn't run (blocked by Gatekeeper? see step 2)"
+      fix "run it once by hand to see why: $BIN status" ;;
     authorized)
       ok "authorized" ;;
     notDetermined)
@@ -147,7 +151,7 @@ if [ "${STATUS%% *}" = "authorized" ]; then
   elif [ -z "$VERDICTS" ]; then
     ok "a test card was shown, and no Focus is filtering right now"
     fix "if you use Focus modes (e.g. Work), add Claude Code to each: System Settings → Focus → (Focus) → Allowed Notifications → Apps → Add"
-  elif printf '%s\n' "$VERDICTS" | grep -qv '^suppression=0$'; then
+  elif grep -qv '^suppression=0$' <<<"$VERDICTS"; then
     bad "your current Focus hid a test card (no banner; Notification Center only)"
     fix "System Settings → Focus → (the Focus that's on) → Allowed Notifications → Apps → Add → Claude Code. Opening Focus settings…"
     open "x-apple.systempreferences:com.apple.Focus-Settings.extension" 2>/dev/null
